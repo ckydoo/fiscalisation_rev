@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:intl/intl.dart';
+import '../services/receipt_print_service.dart';
 
 class FiscalizedReceiptsDisplay extends StatelessWidget {
   final Stream<List<Map<String, dynamic>>> salesStream;
@@ -323,7 +324,7 @@ class FiscalizedReceiptsDisplay extends StatelessWidget {
               ],
             ),
 
-            // QR Code for fiscalized receipts
+            // QR Code section
             if (isFiscalized && qrCode != null) ...[
               const SizedBox(height: 16),
               Center(
@@ -349,6 +350,38 @@ class FiscalizedReceiptsDisplay extends StatelessWidget {
                 ),
               ),
             ],
+
+            // Print Button (always shown)
+            const SizedBox(height: 16),
+            Center(
+              child: ElevatedButton.icon(
+                onPressed: () async {
+                  try {
+                    await ReceiptPrintService.printReceipt(
+                      receipt: receipt,
+                      companyDetails: companyDetails,
+                    );
+                  } catch (e) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          'Error printing receipt: ${e.toString()}',
+                        ),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.print),
+                label: const Text('Print Receipt'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor:
+                      isError ? Colors.red.shade100 : Colors.green.shade100,
+                  foregroundColor:
+                      isError ? Colors.red.shade900 : Colors.green.shade900,
+                ),
+              ),
+            ),
 
             // Error message if fiscalization failed
             if (isError) ...[
