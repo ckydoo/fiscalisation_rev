@@ -1,11 +1,12 @@
 /// Configuration for Laravel API integration
 class ApiConfig {
   // API Base URL - Update this with your Laravel backend URL
-  static const String baseUrl = 'https://your-laravel-backend.com';
+  static const String baseUrl = 'http://192.168.1.219:8000/api/health';
 
   // API Token for authentication - Update with your actual token
   // You can generate this in your Laravel backend
-  static const String? apiToken = 'your-api-token-here';
+  static const String? apiToken =
+      '1|q76OxwDIhsBIT5Gq1Ae1SBIljN8FstFyy7kGV2vQ24eb0052';
 
   // Enable/Disable API sync
   static const bool enableApiSync = true;
@@ -27,7 +28,8 @@ class ApiConfig {
 
   /// Validate configuration
   static bool isConfigured() {
-    return baseUrl.isNotEmpty && baseUrl != 'https://your-laravel-backend.com';
+    return baseUrl.isNotEmpty &&
+        baseUrl != 'http://192.168.1.219:8000/api/health';
   }
 
   /// Get full API URL

@@ -91,20 +91,35 @@ class FiscalizationMiddleware {
         );
         final totalWithTax = subtotal + totalTaxAmount;
 
-        // Map payments
+        debugPrint('Raw payment data from sale: ${sale['Payments']}');
+
         final salesPayments =
             (sale['Payments'] as List<Map<String, dynamic>>?)?.map((payment) {
+              // Extract PaymentTypeId - handle both direct and nested structure
+              final paymentTypeId =
+                  payment['PaymentTypeId'] ??
+                  payment['PaymentTypeDetails']?['Id'];
+
+              debugPrint(
+                'Processing payment: PaymentTypeId=$paymentTypeId, Amount=${payment['Amount']}',
+              );
+
               return {
-                'PaymentTypeId': payment['PaymentTypeId'],
+                'PaymentType':
+                    paymentTypeId, // ✅ CRITICAL: Changed from PaymentTypeId to PaymentType
                 'Amount': payment['Amount'],
                 'PaymentTypeName':
-                    payment['PaymentTypeName'] ?? 'Unknown Payment',
+                    payment['PaymentTypeName'] ??
+                    payment['PaymentTypeDetails']?['Name'] ??
+                    'Unknown Payment',
               };
             }).toList() ??
             [];
 
+        debugPrint('Mapped sales payments: $salesPayments');
+
         // Device ID (you can make this configurable)
-        const deviceId = 'DEVICE001';
+        const deviceId = 1;
 
         // Enrich sales lines with tax information
         final enrichedSalesLines =
@@ -138,7 +153,7 @@ class FiscalizationMiddleware {
           enrichedSalesLines,
           salesPayments,
           salesTaxes,
-          deviceId as int,
+          deviceId,
           companyDetails,
           currencyCode,
         );

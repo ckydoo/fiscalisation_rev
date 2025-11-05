@@ -117,9 +117,10 @@ class _MainScreenState extends State<MainScreen> {
       _fiscalizationMiddleware!.startPolling();
 
       // 7. Set up stream for displaying sales
-      _salesStream = Stream.periodic(const Duration(seconds: 2), (_) {
-        return _dbService!.getAllSalesDetails();
-      }).asyncMap((event) => event);
+      _salesStream =
+          Stream.periodic(const Duration(seconds: 2), (_) {
+            return _dbService!.getAllSalesDetails();
+          }).asyncMap((event) => event).asBroadcastStream();
 
       setState(() {
         _isLoading = false;

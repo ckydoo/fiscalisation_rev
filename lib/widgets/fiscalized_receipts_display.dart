@@ -19,45 +19,47 @@ class FiscalizedReceiptsDisplay extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Company Header
-            _buildCompanyHeader(context),
-            const SizedBox(height: 20),
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Company Header
+              _buildCompanyHeader(context),
+              const SizedBox(height: 20),
 
-            // Receipts List Title
-            Text(
-              'Recent Fiscalized Receipts',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
+              // Receipts List Title
+              Text(
+                'Recent Fiscalized Receipts',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 8),
 
-            // Receipts List
-            StreamBuilder<List<Map<String, dynamic>>>(
-              stream: salesStream,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                  return const Center(child: Text('No receipts found'));
-                }
+              // Receipts List
+              StreamBuilder<List<Map<String, dynamic>>>(
+                stream: salesStream,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                    return const Center(child: Text('No receipts found'));
+                  }
 
-                return ListView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: snapshot.data!.length,
-                  itemBuilder: (context, index) {
-                    final receipt = snapshot.data![index];
-                    return _buildReceiptCard(context, receipt);
-                  },
-                );
-              },
-            ),
-          ],
+                  return ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: snapshot.data!.length,
+                    itemBuilder: (context, index) {
+                      final receipt = snapshot.data![index];
+                      return _buildReceiptCard(context, receipt);
+                    },
+                  );
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
