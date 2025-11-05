@@ -3,19 +3,25 @@ import 'package:flutter/material.dart';
 import 'database_service.dart';
 import 'zimra_fiscalization_service.dart';
 import 'certificate_manager.dart';
+import 'laravel_api_client.dart';
 
 class FiscalizationMiddleware {
   final DatabaseService _dbService;
   final ZimraFiscalizationService _fiscalizationService;
   final CertificateManager _certificateManager;
+  final LaravelApiClient? _laravelApiClient;
+
   Timer? _pollingTimer;
   ValueNotifier<String> statusMessage = ValueNotifier('Initializing...');
+  ValueNotifier<String> apiStatusMessage = ValueNotifier('API: Not configured');
 
   FiscalizationMiddleware(
     this._dbService,
     this._fiscalizationService,
-    this._certificateManager,
-  );
+    this._certificateManager, {
+    LaravelApiClient? laravelApiClient,
+  }) : _laravelApiClient = laravelApiClient;
+
   void startPolling() {
     statusMessage.value = 'Monitoring Aronium DB for new sales...';
     _pollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
@@ -71,72 +77,52 @@ class FiscalizationMiddleware {
               return {
                 'TaxCode': tax['Code'],
                 'TaxPercent': taxRate,
-                'Rate': taxRate, // Add Rate field for display compatibility
+                'Rate': taxRate,
                 'TaxID': tax['Id'],
-                'Name': tax['Name'] ?? 'Tax',
+                'Name': tax['Name'] ?? 'Unknown Tax',
                 'TaxAmount': taxAmount,
-                'SalesAmountWithTax': subtotal + taxAmount,
               };
             }).toList();
 
-        statusMessage.value = 'Processing document #${sale['Id']}';
-
-        // Allow API calls to proceed even without certificates to see 401 errors
-        final deviceId =
-            12345; // Use a test device ID since we don't have real certificates
-
-        // Calculate total amount including taxes
-        final totalWithTax = salesTaxes.fold(
-          subtotal,
-          (sum, tax) => sum + (tax['TaxAmount'] as num).toDouble(),
+        // Calculate total
+        final totalTaxAmount = salesTaxes.fold(
+          0.0,
+          (sum, tax) => sum + ((tax['TaxAmount'] as num?)?.toDouble() ?? 0.0),
         );
+        final totalWithTax = subtotal + totalTaxAmount;
 
-        // Use actual payment data from the sales document or create default if none exists
-        List<Map<String, dynamic>> salesPayments = [];
+        // Map payments
+        final salesPayments =
+            (sale['Payments'] as List<Map<String, dynamic>>?)?.map((payment) {
+              return {
+                'PaymentTypeId': payment['PaymentTypeId'],
+                'Amount': payment['Amount'],
+                'PaymentTypeName':
+                    payment['PaymentTypeName'] ?? 'Unknown Payment',
+              };
+            }).toList() ??
+            [];
 
-        if (sale['Payments'] != null && (sale['Payments'] as List).isNotEmpty) {
-          // Use actual payments from the database
-          for (var payment in sale['Payments'] as List<Map<String, dynamic>>) {
-            final paymentAmount =
-                (payment['Amount'] as num?)?.toDouble() ?? 0.0;
-            final paymentTypeId = payment['PaymentTypeId'] as int? ?? 0;
-
-            salesPayments.add({
-              'PaymentType': paymentTypeId,
-              'Amount': paymentAmount,
-              'PaymentMethodName':
-                  payment['PaymentTypeDetails']?['Name'] ?? 'Unknown',
-            });
-          }
-        } else {
-          // Create a default cash payment for the total amount if no payments exist
-          salesPayments = [
-            {
-              'PaymentType': 0, // Cash payment type
-              'Amount': totalWithTax,
-              'PaymentMethodName': 'Cash',
-            },
-          ];
-        }
+        // Device ID (you can make this configurable)
+        const deviceId = 'DEVICE001';
 
         // Enrich sales lines with tax information
         final enrichedSalesLines =
             (sale['Items'] as List<Map<String, dynamic>>).map((item) {
-              // Get the default tax from the first available tax
-              final defaultTax = taxes.first;
-              final defaultTaxId = defaultTax['Id'] as int;
-              final defaultTaxCode = defaultTax['Code'] as String;
-              final defaultTaxRate = (defaultTax['Rate'] as num).toDouble();
+              final defaultTax = taxes.isNotEmpty ? taxes.first : null;
+              final defaultTaxId = defaultTax?['Id'];
+              final defaultTaxCode = defaultTax?['Code'];
+              final defaultTaxRate =
+                  (defaultTax?['Rate'] as num?)?.toDouble() ?? 0.0;
 
-              debugPrint('Processing item: ${item['ProductDetails']?['Name']}');
+              debugPrint('Enriching item: ${item['ProductDetails']?['Name']}');
               debugPrint(
                 'Assigning tax: ID=$defaultTaxId, Code=$defaultTaxCode, Rate=$defaultTaxRate',
               );
 
               return {
                 ...item,
-                'TaxID':
-                    defaultTaxId, // Use uppercase to match fiscalization service
+                'TaxID': defaultTaxId,
                 'TaxCode': defaultTaxCode,
                 'TaxPercent': defaultTaxRate,
               };
@@ -146,17 +132,18 @@ class FiscalizationMiddleware {
         debugPrint('Sales payments: $salesPayments');
         debugPrint('Enriched sales lines: $enrichedSalesLines');
 
+        // STEP 1: Fiscalize with ZIMRA
         final result = await _fiscalizationService.fiscalizeTransaction(
-          sale, // Pass the entire sales document map
-          enrichedSalesLines, // Pass the enriched sales lines with tax information
-          salesPayments, // Pass the payment details
-          salesTaxes, // Pass the calculated sales taxes
-          deviceId, // Use test device ID
-          companyDetails, // Pass company details
-          currencyCode, // Pass currency code
+          sale,
+          enrichedSalesLines,
+          salesPayments,
+          salesTaxes,
+          deviceId as int,
+          companyDetails,
+          currencyCode,
         );
 
-        // Enhanced error handling and logging
+        // Handle fiscalization result
         if (result['success'] == true) {
           final recordToInsert = {
             'fiscalSignature': result['response']?['fiscalSignature'],
@@ -165,72 +152,162 @@ class FiscalizationMiddleware {
             'fiscalError': null,
             'TaxDetails': salesTaxes,
           };
+
           await _dbService.insertFiscalizedRecord(
             sale['Id'] as int,
             recordToInsert,
           );
+
           statusMessage.value =
               'Document #${sale['Id']} fiscalized successfully';
+
+          // STEP 2: Send to Laravel API (if configured)
+          if (_laravelApiClient != null) {
+            apiStatusMessage.value = 'Sending to Laravel API...';
+
+            final apiResult = await _laravelApiClient.sendSalesData(
+              saleDocument: sale,
+              saleItems: enrichedSalesLines,
+              companyDetails: companyDetails,
+              fiscalData: {
+                'FiscalSignature': result['response']?['fiscalSignature'],
+                'QrCode': result['response']?['qrCode'],
+                'FiscalInvoiceNumber':
+                    result['response']?['fiscalInvoiceNumber'],
+                'FiscalizedDate': DateTime.now().toIso8601String(),
+                'TaxDetails': salesTaxes,
+              },
+            );
+
+            if (apiResult['success'] == true) {
+              apiStatusMessage.value =
+                  'API: Document #${sale['Id']} synced successfully';
+              debugPrint('Sales data sent to Laravel API successfully');
+            } else {
+              apiStatusMessage.value =
+                  'API: Failed to sync document #${sale['Id']}';
+              debugPrint(
+                'Failed to send to Laravel API: ${apiResult['message']}',
+              );
+              // You might want to queue this for retry later
+            }
+          } else {
+            apiStatusMessage.value = 'API: Not configured';
+          }
         } else {
-          // Handle different types of errors
+          // Handle fiscalization error
           String errorDetails = result['message'] ?? 'Unknown error';
 
-          if (result['errorType'] == 'validation_error') {
-            debugPrint('=== VALIDATION ERROR ===');
-            debugPrint('Document #${sale['Id']}: $errorDetails');
-            if (result['validationErrors'] != null) {
-              debugPrint('Validation errors: ${result['validationErrors']}');
+          if (result['response'] != null) {
+            final response = result['response'];
+            if (response is Map) {
+              errorDetails += '\nDetails: ${response.toString()}';
             }
-            if (result['detailedError'] != null) {
-              debugPrint('Detailed error: ${result['detailedError']}');
-            }
-            debugPrint('========================');
-            errorDetails = 'Validation failed: $errorDetails';
-          } else if (result['errorType'] == 'bad_request') {
-            debugPrint('=== 400 BAD REQUEST ERROR ===');
-            debugPrint('Document #${sale['Id']}: $errorDetails');
-            if (result['troubleshooting'] != null) {
-              debugPrint('Troubleshooting tips:');
-              for (String tip in result['troubleshooting']) {
-                debugPrint('• $tip');
-              }
-            }
-            debugPrint('============================');
-            errorDetails = '400 Bad Request: $errorDetails';
-          } else if (result['errorType'] == 'system_error') {
-            debugPrint('=== SYSTEM ERROR ===');
-            debugPrint('Document #${sale['Id']}: $errorDetails');
-            if (result['stackTrace'] != null) {
-              debugPrint('Stack trace: ${result['stackTrace']}');
-            }
-            debugPrint('===================');
-            errorDetails = 'System error: $errorDetails';
           }
 
-          final recordToInsert = {
+          final errorRecord = {
             'fiscalSignature': null,
             'qrCode': null,
             'fiscalInvoiceNumber': null,
             'fiscalError': errorDetails,
             'TaxDetails': salesTaxes,
-            'errorType': result['errorType'],
-            'validationErrors': result['validationErrors'],
           };
+
           await _dbService.insertFiscalizedRecord(
             sale['Id'] as int,
-            recordToInsert,
+            errorRecord,
           );
+
           statusMessage.value =
               'Error fiscalizing document #${sale['Id']}: $errorDetails';
+
+          debugPrint('Fiscalization failed: $errorDetails');
+
+          // Still try to send to Laravel API with error status (if configured)
+          if (_laravelApiClient != null) {
+            apiStatusMessage.value = 'Sending error status to API...';
+
+            await _laravelApiClient.sendSalesData(
+              saleDocument: {...sale, 'FiscalStatus': 'error'},
+              saleItems: enrichedSalesLines,
+              companyDetails: companyDetails,
+              fiscalData: {
+                'FiscalError': errorDetails,
+                'TaxDetails': salesTaxes,
+              },
+            );
+          }
         }
-      } catch (e) {
-        statusMessage.value = 'Error: ${e.toString()}';
+      } catch (e, stackTrace) {
+        statusMessage.value = 'Error during polling: ${e.toString()}';
+        debugPrint('Polling error: $e\n$stackTrace');
       }
     });
   }
 
+  /// Manually sync a specific sale to Laravel API
+  Future<Map<String, dynamic>> syncSaleToApi(int documentId) async {
+    if (_laravelApiClient == null) {
+      return {'success': false, 'message': 'Laravel API client not configured'};
+    }
+
+    try {
+      // Get the sale details
+      final allSales = await _dbService.getAllSalesDetails();
+      final sale = allSales.firstWhere(
+        (s) => s['Id'] == documentId,
+        orElse: () => <String, dynamic>{},
+      );
+
+      if (sale.isEmpty) {
+        return {'success': false, 'message': 'Sale not found'};
+      }
+
+      final companyDetails = await _dbService.getCompanyDetails();
+      if (companyDetails == null) {
+        return {'success': false, 'message': 'Company details not found'};
+      }
+
+      return await _laravelApiClient.sendSalesData(
+        saleDocument: sale,
+        saleItems: sale['Items'] as List<Map<String, dynamic>>,
+        companyDetails: companyDetails,
+        fiscalData:
+            sale['FiscalStatus'] == 'fiscalized'
+                ? {
+                  'FiscalSignature': sale['FiscalSignature'],
+                  'QrCode': sale['QrCode'],
+                  'FiscalInvoiceNumber': sale['FiscalInvoiceNumber'],
+                  'FiscalizedDate': sale['FiscalizedDate'],
+                  'TaxDetails': sale['TaxDetails'],
+                }
+                : null,
+      );
+    } catch (e, stackTrace) {
+      debugPrint('Error syncing sale to API: $e\n$stackTrace');
+      return {
+        'success': false,
+        'message': 'Exception occurred: ${e.toString()}',
+      };
+    }
+  }
+
+  /// Test Laravel API connection
+  Future<bool> testApiConnection() async {
+    if (_laravelApiClient == null) {
+      return false;
+    }
+    return await _laravelApiClient.testConnection();
+  }
+
   void stopPolling() {
     _pollingTimer?.cancel();
-    statusMessage.value = 'Middleware stopped';
+    statusMessage.value = 'Polling stopped';
+  }
+
+  void dispose() {
+    _pollingTimer?.cancel();
+    statusMessage.dispose();
+    apiStatusMessage.dispose();
   }
 }

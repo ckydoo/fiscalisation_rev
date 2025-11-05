@@ -11,6 +11,8 @@ class FiscalizedReceiptsDisplay extends StatelessWidget {
     super.key,
     required this.salesStream,
     required this.companyDetails,
+    required Future<Null> Function(dynamic documentId) onSyncToApi,
+    required bool showApiSyncButton,
   });
 
   @override
