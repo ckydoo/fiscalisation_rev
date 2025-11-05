@@ -4,9 +4,9 @@ class ApiConfig {
   static const String baseUrl = 'http://192.168.1.219:8000';
 
   // API Token for authentication - Update with your actual token
-  // You can generate this in your Laravel backend
+  // FIXED: Removed extra quote at the end
   static const String? apiToken =
-      '1|q76OxwDIhsBIT5Gq1Ae1SBIljN8FstFyy7kGV2vQ24eb0052';
+      '2|SZ2lYC5x6n1Gc4v90VxQUOghBrMQwyo35tFI69bQ6ead7200';
 
   // Enable/Disable API sync
   static const bool enableApiSync = true;
@@ -27,8 +27,9 @@ class ApiConfig {
   static const bool syncFailedFiscalizations = true;
 
   /// Validate configuration
+  /// FIXED: Now checks if token exists, not if baseUrl is different
   static bool isConfigured() {
-    return baseUrl.isNotEmpty && baseUrl != 'http://192.168.1.219:8000';
+    return baseUrl.isNotEmpty && apiToken != null && apiToken!.isNotEmpty;
   }
 
   /// Get full API URL
