@@ -38,7 +38,6 @@ class DatabaseService {
         },
         onUpgrade: (db, oldVersion, newVersion) async {
           if (oldVersion < 2) {
-            // Check if column already exists before adding
             final columns = await db.rawQuery(
               "PRAGMA table_info(FiscalizedDocuments)",
             );
@@ -62,81 +61,6 @@ class DatabaseService {
       aroniumDbPath!,
       options: OpenDatabaseOptions(readOnly: true),
     );
-  }
-
-  Future<Map<String, dynamic>?> getUnfiscalizedSaleDetails() async {
-    final fiscalizedIds =
-        (await _fiscalTrackerDatabase.query(
-          'FiscalizedDocuments',
-          columns: ['AroniumDocumentId'],
-        )).map((e) => e['AroniumDocumentId']).toList();
-
-    final allAroniumSales = await _aroniumDatabase.query(
-      'Document',
-      where: 'DocumentTypeId = ?',
-      whereArgs: [2],
-      orderBy: 'DateCreated ASC',
-    );
-
-    final unfiscalized =
-        allAroniumSales.where((doc) {
-          return !fiscalizedIds.contains(doc['Id']);
-        }).toList();
-
-    if (unfiscalized.isEmpty) return null;
-
-    final document = unfiscalized.first;
-    final documentId = document['Id'] as int;
-
-    // Fetch document items
-    final items = await _aroniumDatabase.query(
-      'DocumentItem',
-      where: 'DocumentId = ?',
-      whereArgs: [documentId],
-    );
-
-    List<Map<String, dynamic>> enrichedItems = [];
-    for (var item in items) {
-      final product = await _aroniumDatabase.query(
-        'Product',
-        where: 'Id = ?',
-        whereArgs: [item['ProductId']],
-        limit: 1,
-      );
-      if (product.isNotEmpty) {
-        enrichedItems.add({...item, 'ProductDetails': product.first});
-      }
-    }
-
-    // Fetch payment details for the document
-    final payments = await _aroniumDatabase.query(
-      'Payment',
-      where: 'DocumentId = ?',
-      whereArgs: [documentId],
-    );
-
-    List<Map<String, dynamic>> enrichedPayments = [];
-    for (var payment in payments) {
-      // Fetch payment type details if available
-      final paymentType = await _aroniumDatabase.query(
-        'PaymentType',
-        where: 'Id = ?',
-        whereArgs: [payment['PaymentTypeId']],
-        limit: 1,
-      );
-
-      enrichedPayments.add({
-        ...payment,
-        'PaymentTypeDetails': paymentType.isNotEmpty ? paymentType.first : null,
-      });
-    }
-
-    return {
-      ...document,
-      'Items': enrichedItems,
-      'Payments': enrichedPayments,
-      'FiscalStatus': 'pending',
-    };
   }
 
   Future<void> insertFiscalizedRecord(
@@ -231,247 +155,9 @@ class DatabaseService {
     return allSalesDetails;
   }
 
-  // --- NEW: Fetch Company Details ---
-  Future<Map<String, dynamic>?> getCompanyDetails() async {
-    // Assuming there's only one company record or you want the first one
-    final company = await _aroniumDatabase.query('Company', limit: 1);
-    if (company.isNotEmpty) {
-      return company.first;
-    }
-    return null;
-  }
-
   // --- NEW: Fetch Payment Type Details (if needed for dynamic mapping) ---
   Future<List<Map<String, dynamic>>> getAllPaymentTypes() async {
     return await _aroniumDatabase.query('PaymentType');
-  }
-
-  // --- NEW: Fetch Currency Details ---
-  Future<List<Map<String, dynamic>>> getAllCurrencies() async {
-    return await _aroniumDatabase.query('Currency');
-  }
-
-  // --- NEW: Fetch Tax Details ---
-  Future<List<Map<String, dynamic>>> getAllTaxes() async {
-    final taxes = await _aroniumDatabase.query(
-      'Tax',
-      where: 'IsEnabled = ?',
-      whereArgs: [1],
-    );
-    return taxes;
-  }
-
-  Future<void> close() async {
-    await _aroniumDatabase.close();
-    await _fiscalTrackerDatabase.close();
-  }
-
-  // Add these methods to your existing DatabaseService class
-
-  /// Get all products from Aronium database
-  Future<List<Map<String, dynamic>>> getAllProducts() async {
-    try {
-      final products = await _aroniumDatabase.query(
-        'Product',
-        orderBy: 'Name ASC',
-      );
-
-      // Enrich with category and tax information
-      List<Map<String, dynamic>> enrichedProducts = [];
-      for (var product in products) {
-        Map<String, dynamic> enriched = {...product};
-
-        // Get category if exists
-        if (product['CategoryId'] != null) {
-          final category = await _aroniumDatabase.query(
-            'Category',
-            where: 'Id = ?',
-            whereArgs: [product['CategoryId']],
-            limit: 1,
-          );
-          if (category.isNotEmpty) {
-            enriched['CategoryName'] = category.first['Name'];
-          }
-        }
-
-        // Get tax if exists
-        if (product['TaxId'] != null) {
-          final tax = await _aroniumDatabase.query(
-            'Tax',
-            where: 'Id = ?',
-            whereArgs: [product['TaxId']],
-            limit: 1,
-          );
-          if (tax.isNotEmpty) {
-            enriched['TaxCode'] = tax.first['Code'];
-            enriched['TaxRate'] = tax.first['Rate'];
-          }
-        }
-
-        enrichedProducts.add(enriched);
-      }
-
-      return enrichedProducts;
-    } catch (e) {
-      debugPrint('Error getting products: $e');
-      return [];
-    }
-  }
-
-  /// Get all stock levels from Aronium database
-  Future<List<Map<String, dynamic>>> getAllStockLevels() async {
-    try {
-      // Aronium may store inventory in different ways depending on version
-      // This is a common structure - adjust based on your Aronium schema
-
-      // Try to get from Inventory table first
-      try {
-        final inventory = await _aroniumDatabase.query('Inventory');
-        if (inventory.isNotEmpty) {
-          return inventory;
-        }
-      } catch (e) {
-        debugPrint('Inventory table not found, trying Product table');
-      }
-
-      // Fallback: Get stock levels from Product table
-      final products = await _aroniumDatabase.query(
-        'Product',
-        columns: [
-          'Id as ProductId',
-          'Quantity',
-          'ReservedQuantity',
-          'ReorderLevel',
-          'ReorderQuantity',
-          'Location',
-        ],
-        where: 'TrackInventory = ?',
-        whereArgs: [1],
-      );
-
-      return products;
-    } catch (e) {
-      debugPrint('Error getting stock levels: $e');
-      return [];
-    }
-  }
-
-  /// Get all purchases from Aronium database
-  Future<List<Map<String, dynamic>>> getAllPurchases() async {
-    try {
-      // Purchase documents typically have DocumentTypeId = 3 or 4 in Aronium
-      // Adjust based on your Aronium configuration
-      final purchases = await _aroniumDatabase.query(
-        'Document',
-        where: 'DocumentTypeId IN (?, ?)',
-        whereArgs: [3, 4], // 3 = Purchase Order, 4 = Purchase Invoice
-        orderBy: 'DateCreated DESC',
-      );
-
-      // Enrich with supplier information
-      List<Map<String, dynamic>> enrichedPurchases = [];
-      for (var purchase in purchases) {
-        Map<String, dynamic> enriched = {...purchase};
-
-        // Get supplier if exists
-        if (purchase['PartnerId'] != null) {
-          final supplier = await _aroniumDatabase.query(
-            'Partner',
-            where: 'Id = ?',
-            whereArgs: [purchase['PartnerId']],
-            limit: 1,
-          );
-          if (supplier.isNotEmpty) {
-            enriched['SupplierId'] = supplier.first['Id'];
-            enriched['SupplierName'] = supplier.first['Name'];
-          }
-        }
-
-        enrichedPurchases.add(enriched);
-      }
-
-      return enrichedPurchases;
-    } catch (e) {
-      debugPrint('Error getting purchases: $e');
-      return [];
-    }
-  }
-
-  /// Get purchase items for a specific purchase document
-  Future<List<Map<String, dynamic>>> getPurchaseItems(int documentId) async {
-    try {
-      final items = await _aroniumDatabase.query(
-        'DocumentItem',
-        where: 'DocumentId = ?',
-        whereArgs: [documentId],
-      );
-
-      // Enrich with product information
-      List<Map<String, dynamic>> enrichedItems = [];
-      for (var item in items) {
-        final product = await _aroniumDatabase.query(
-          'Product',
-          where: 'Id = ?',
-          whereArgs: [item['ProductId']],
-          limit: 1,
-        );
-
-        if (product.isNotEmpty) {
-          enrichedItems.add({
-            ...item,
-            'ProductName': product.first['Name'],
-            'ProductCode': product.first['Code'],
-          });
-        } else {
-          enrichedItems.add(item);
-        }
-      }
-
-      return enrichedItems;
-    } catch (e) {
-      debugPrint('Error getting purchase items: $e');
-      return [];
-    }
-  }
-
-  /// Get all Z-Reports from Aronium database
-  Future<List<Map<String, dynamic>>> getAllZReports() async {
-    try {
-      // Z-Reports might be stored in different tables depending on Aronium version
-      // Common table names: ZReport, DailyReport, CashRegisterReport
-
-      // Try ZReport table first
-      try {
-        final reports = await _aroniumDatabase.query(
-          'ZReport',
-          orderBy: 'ReportDate DESC',
-        );
-        if (reports.isNotEmpty) {
-          return await _enrichZReports(reports);
-        }
-      } catch (e) {
-        debugPrint('ZReport table not found: $e');
-      }
-
-      // Try DailyReport table
-      try {
-        final reports = await _aroniumDatabase.query(
-          'DailyReport',
-          orderBy: 'ReportDate DESC',
-        );
-        if (reports.isNotEmpty) {
-          return await _enrichZReports(reports);
-        }
-      } catch (e) {
-        debugPrint('DailyReport table not found: $e');
-      }
-
-      // Fallback: Generate Z-Reports from sales data
-      return await _generateZReportsFromSales();
-    } catch (e) {
-      debugPrint('Error getting Z-Reports: $e');
-      return [];
-    }
   }
 
   /// Enrich Z-Reports with additional data
@@ -504,49 +190,6 @@ class DatabaseService {
     }
 
     return enriched;
-  }
-
-  /// Generate Z-Reports from sales data if no Z-Report table exists
-  Future<List<Map<String, dynamic>>> _generateZReportsFromSales() async {
-    try {
-      // Get all sales grouped by date
-      final sales = await _aroniumDatabase.rawQuery('''
-        SELECT 
-          DATE(DateCreated) as ReportDate,
-          COUNT(*) as TotalTransactions,
-          SUM(Total) as GrossSales,
-          SUM(Discount) as Discounts,
-          SUM(Tax) as TotalTax,
-          SUM(Total - Discount) as NetSales
-        FROM Document
-        WHERE DocumentTypeId = 2
-        GROUP BY DATE(DateCreated)
-        ORDER BY DATE(DateCreated) DESC
-      ''');
-
-      // Generate report numbers
-      List<Map<String, dynamic>> reports = [];
-      for (var i = 0; i < sales.length; i++) {
-        final sale = sales[i];
-        reports.add({
-          'Id': i + 1,
-          'ReportDate': sale['ReportDate'],
-          'ReportNumber': 'Z-${sale['ReportDate']}',
-          'TotalTransactions': sale['TotalTransactions'] ?? 0,
-          'TotalItemsSold': 0, // Would need to calculate from items
-          'GrossSales': sale['GrossSales'] ?? 0.0,
-          'Discounts': sale['Discounts'] ?? 0.0,
-          'Returns': 0.0,
-          'NetSales': sale['NetSales'] ?? 0.0,
-          'TotalTax': sale['TotalTax'] ?? 0.0,
-        });
-      }
-
-      return reports;
-    } catch (e) {
-      debugPrint('Error generating Z-Reports from sales: $e');
-      return [];
-    }
   }
 
   /// Get Z-Report for a specific date
@@ -600,6 +243,488 @@ class DatabaseService {
     } catch (e) {
       debugPrint('Error getting Z-Report for date: $e');
       return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> getUnfiscalizedSaleDetails() async {
+    final fiscalizedIds =
+        (await _fiscalTrackerDatabase.query(
+          'FiscalizedDocuments',
+          columns: ['AroniumDocumentId'],
+        )).map((e) => e['AroniumDocumentId']).toList();
+
+    final allAroniumSales = await _aroniumDatabase.query(
+      'Document',
+      where: 'DocumentTypeId = ?',
+      whereArgs: [2],
+    );
+
+    final unfiscalizedSales =
+        allAroniumSales
+            .where((sale) => !fiscalizedIds.contains(sale['Id']))
+            .toList();
+
+    if (unfiscalizedSales.isEmpty) {
+      return null;
+    }
+
+    final sale = unfiscalizedSales.first;
+    final saleId = sale['Id'] as int;
+
+    final items = await _aroniumDatabase.query(
+      'DocumentItem',
+      where: 'DocumentId = ?',
+      whereArgs: [saleId],
+    );
+
+    final detailedItems = <Map<String, dynamic>>[];
+    for (var item in items) {
+      final productId = item['ProductId'];
+      final productDetails = await _aroniumDatabase.query(
+        'Product',
+        where: 'Id = ?',
+        whereArgs: [productId],
+        limit: 1,
+      );
+
+      if (productDetails.isNotEmpty) {
+        final product = productDetails.first;
+
+        // Get tax information for the product
+        final productTaxes = await _aroniumDatabase.query(
+          'ProductTax',
+          where: 'ProductId = ?',
+          whereArgs: [productId],
+        );
+
+        double taxRate = 0.0;
+        String taxCode = 'A';
+
+        if (productTaxes.isNotEmpty) {
+          final taxId = productTaxes.first['TaxId'];
+          final taxDetails = await _aroniumDatabase.query(
+            'Tax',
+            where: 'Id = ?',
+            whereArgs: [taxId],
+            limit: 1,
+          );
+
+          if (taxDetails.isNotEmpty) {
+            taxRate = (taxDetails.first['Rate'] as num?)?.toDouble() ?? 0.0;
+            taxCode = taxDetails.first['Code']?.toString() ?? 'A';
+          }
+        }
+
+        detailedItems.add({
+          'ProductId': productId,
+          'Name': product['Name'] ?? 'Unknown Product',
+          'Quantity': (item['Quantity'] as num?)?.toDouble() ?? 0.0,
+          'Price': (item['Price'] as num?)?.toDouble() ?? 0.0,
+          'Discount': (item['Discount'] as num?)?.toDouble() ?? 0.0,
+          'Total': (item['Total'] as num?)?.toDouble() ?? 0.0,
+          'TaxRate': taxRate,
+          'TaxCode': taxCode,
+        });
+      }
+    }
+
+    return {
+      'Id': saleId,
+      'Number': sale['Number'],
+      'Date': sale['Date'],
+      'DateCreated': sale['DateCreated'],
+      'Total': (sale['Total'] as num?)?.toDouble() ?? 0.0,
+      'Discount': (sale['Discount'] as num?)?.toDouble() ?? 0.0,
+      'CustomerId': sale['CustomerId'],
+      'UserId': sale['UserId'],
+      'Items': detailedItems,
+    };
+  }
+
+  Future<void> saveFiscalizationResult({
+    required int aroniumDocumentId,
+    required String fiscalSignature,
+    required String qrCode,
+    required String fiscalInvoiceNumber,
+    String? taxDetails,
+  }) async {
+    await _fiscalTrackerDatabase.insert('FiscalizedDocuments', {
+      'AroniumDocumentId': aroniumDocumentId,
+      'FiscalSignature': fiscalSignature,
+      'QrCode': qrCode,
+      'FiscalInvoiceNumber': fiscalInvoiceNumber,
+      'TaxDetails': taxDetails,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> saveFiscalizationError({
+    required int aroniumDocumentId,
+    required String error,
+  }) async {
+    await _fiscalTrackerDatabase.insert('FiscalizedDocuments', {
+      'AroniumDocumentId': aroniumDocumentId,
+      'FiscalError': error,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map<String, dynamic>?> getCompanyDetails() async {
+    final companies = await _aroniumDatabase.query('Company', limit: 1);
+    return companies.isEmpty ? null : companies.first;
+  }
+
+  Future<List<Map<String, dynamic>>> getAllCurrencies() async {
+    return await _aroniumDatabase.query('Currency');
+  }
+
+  Future<List<Map<String, dynamic>>> getAllTaxes() async {
+    final taxes = await _aroniumDatabase.query(
+      'Tax',
+      where: 'IsEnabled = ?',
+      whereArgs: [1],
+    );
+    return taxes;
+  }
+
+  Future<void> close() async {
+    await _aroniumDatabase.close();
+    await _fiscalTrackerDatabase.close();
+  }
+
+  /// Get all products from Aronium database
+  Future<List<Map<String, dynamic>>> getAllProducts() async {
+    try {
+      final products = await _aroniumDatabase.query(
+        'Product',
+        orderBy: 'Name ASC',
+      );
+
+      // Enrich with category and tax information
+      List<Map<String, dynamic>> enrichedProducts = [];
+      for (var product in products) {
+        Map<String, dynamic> enriched = {...product};
+
+        // Get category if exists
+        if (product['ProductGroupId'] != null) {
+          final category = await _aroniumDatabase.query(
+            'ProductGroup',
+            where: 'Id = ?',
+            whereArgs: [product['ProductGroupId']],
+            limit: 1,
+          );
+          if (category.isNotEmpty) {
+            enriched['CategoryName'] = category.first['Name'];
+          }
+        }
+
+        // Get tax if exists - using ProductTax junction table
+        final productTaxes = await _aroniumDatabase.query(
+          'ProductTax',
+          where: 'ProductId = ?',
+          whereArgs: [product['Id']],
+          limit: 1,
+        );
+
+        if (productTaxes.isNotEmpty) {
+          final taxId = productTaxes.first['TaxId'];
+          final tax = await _aroniumDatabase.query(
+            'Tax',
+            where: 'Id = ?',
+            whereArgs: [taxId],
+            limit: 1,
+          );
+          if (tax.isNotEmpty) {
+            enriched['TaxCode'] = tax.first['Code'];
+            enriched['TaxRate'] = tax.first['Rate'];
+            enriched['TaxId'] = tax.first['Id'];
+          }
+        }
+
+        enrichedProducts.add(enriched);
+      }
+
+      return enrichedProducts;
+    } catch (e) {
+      debugPrint('Error getting products: $e');
+      return [];
+    }
+  }
+
+  /// Get all stock levels from Aronium database using the Stock table
+  Future<List<Map<String, dynamic>>> getAllStockLevels() async {
+    try {
+      final stockQuery = '''
+      SELECT 
+        s.ProductId,
+        s.WarehouseId,
+        COALESCE(s.Quantity, 0) as Quantity,
+        COALESCE(sc.ReorderPoint, 0) as ReorderLevel,
+        COALESCE(sc.PreferredQuantity, 0) as ReorderQuantity,
+        0 as ReservedQuantity,
+        NULL as Location
+      FROM Stock s
+      LEFT JOIN StockControl sc ON sc.ProductId = s.ProductId
+      WHERE s.Quantity IS NOT NULL
+    ''';
+
+      final stocks = await _aroniumDatabase.rawQuery(stockQuery);
+
+      debugPrint('Stock records from Aronium: ${stocks.length}');
+      if (stocks.isNotEmpty) {
+        final totalQty = stocks.fold<double>(
+          0,
+          (sum, s) => sum + ((s['Quantity'] as num?)?.toDouble() ?? 0),
+        );
+        debugPrint('Total quantity across all products: $totalQty');
+
+        // Show first 5 non-zero stocks
+        final nonZero = stocks
+            .where((s) => ((s['Quantity'] as num?)?.toDouble() ?? 0) > 0)
+            .take(5);
+
+        if (nonZero.isNotEmpty) {
+          debugPrint('Sample non-zero stocks:');
+          nonZero.forEach((s) {
+            debugPrint('  Product ${s['ProductId']}: ${s['Quantity']}');
+          });
+        } else {
+          debugPrint('⚠️ WARNING: All stock quantities are zero!');
+        }
+      }
+
+      return stocks;
+    } catch (e) {
+      debugPrint('Error getting stock levels: $e');
+
+      // Fallback query
+      try {
+        final basicStocks = await _aroniumDatabase.query('Stock');
+        debugPrint('Fallback: Retrieved ${basicStocks.length} stock records');
+
+        return basicStocks.map((stock) {
+          return {
+            'ProductId': stock['ProductId'],
+            'WarehouseId': stock['WarehouseId'],
+            'Quantity': stock['Quantity'] ?? 0,
+            'ReorderLevel': null,
+            'ReorderQuantity': null,
+            'ReservedQuantity': 0,
+            'Location': null,
+          };
+        }).toList();
+      } catch (e2) {
+        debugPrint('Fallback also failed: $e2');
+        return [];
+      }
+    }
+  }
+
+  /// Get all purchases from Aronium database
+  Future<List<Map<String, dynamic>>> getAllPurchases() async {
+    try {
+      // Purchase documents - check your DocumentType table for exact IDs
+      // Common: 1=Sales, 2=Sales Invoice, 3=Purchase Order, 4=Purchase Invoice
+      final purchases = await _aroniumDatabase.query(
+        'Document',
+        where: 'DocumentTypeId IN (3, 4)',
+        orderBy: 'DateCreated DESC',
+      );
+
+      // Enrich with supplier information
+      List<Map<String, dynamic>> enrichedPurchases = [];
+      for (var purchase in purchases) {
+        Map<String, dynamic> enriched = {...purchase};
+
+        // Get supplier if exists (Customer table is used for both customers and suppliers)
+        if (purchase['CustomerId'] != null) {
+          final supplier = await _aroniumDatabase.query(
+            'Customer',
+            where: 'Id = ?',
+            whereArgs: [purchase['CustomerId']],
+            limit: 1,
+          );
+          if (supplier.isNotEmpty) {
+            enriched['SupplierId'] = supplier.first['Id'];
+            enriched['SupplierName'] = supplier.first['Name'];
+          }
+        }
+
+        enrichedPurchases.add(enriched);
+      }
+
+      return enrichedPurchases;
+    } catch (e) {
+      debugPrint('Error getting purchases: $e');
+      return [];
+    }
+  }
+
+  /// Get purchase items for a specific purchase document
+  Future<List<Map<String, dynamic>>> getPurchaseItems(int documentId) async {
+    try {
+      final items = await _aroniumDatabase.query(
+        'DocumentItem',
+        where: 'DocumentId = ?',
+        whereArgs: [documentId],
+      );
+
+      // Enrich with product information
+      List<Map<String, dynamic>> enrichedItems = [];
+      for (var item in items) {
+        final product = await _aroniumDatabase.query(
+          'Product',
+          where: 'Id = ?',
+          whereArgs: [item['ProductId']],
+          limit: 1,
+        );
+
+        if (product.isNotEmpty) {
+          enrichedItems.add({
+            ...item,
+            'ProductName': product.first['Name'],
+            'ProductCode': product.first['Code'],
+          });
+        }
+      }
+
+      return enrichedItems;
+    } catch (e) {
+      debugPrint('Error getting purchase items: $e');
+      return [];
+    }
+  }
+
+  /// Get Z-Reports from Aronium database (fixed to use correct column names)
+  Future<List<Map<String, dynamic>>> getAllZReports() async {
+    try {
+      // First try the ZReport table with correct column name
+      try {
+        final zReports = await _aroniumDatabase.query(
+          'ZReport',
+          orderBy: 'DateCreated DESC',
+        );
+
+        if (zReports.isNotEmpty) {
+          // Enrich with calculated totals from associated documents
+          List<Map<String, dynamic>> enrichedReports = [];
+
+          for (var report in zReports) {
+            final fromDocId = report['FromDocumentId'] as int;
+            final toDocId = report['ToDocumentId'] as int;
+
+            // Get all sales in this Z-Report range
+            final salesQuery = '''
+              SELECT 
+                COUNT(*) as TotalTransactions,
+                SUM(Total) as GrossSales,
+                SUM(Discount) as Discounts,
+                SUM(Total - Discount) as NetSales
+              FROM Document
+              WHERE DocumentTypeId = 2
+              AND Id >= ? AND Id <= ?
+            ''';
+
+            final totals = await _aroniumDatabase.rawQuery(salesQuery, [
+              fromDocId,
+              toDocId,
+            ]);
+
+            // Get tax totals from DocumentItemTax
+            final taxQuery = '''
+              SELECT SUM(dit.Amount) as TotalTax
+              FROM DocumentItemTax dit
+              INNER JOIN DocumentItem di ON di.Id = dit.DocumentItemId
+              INNER JOIN Document d ON d.Id = di.DocumentId
+              WHERE d.DocumentTypeId = 2
+              AND d.Id >= ? AND d.Id <= ?
+            ''';
+
+            final taxTotals = await _aroniumDatabase.rawQuery(taxQuery, [
+              fromDocId,
+              toDocId,
+            ]);
+
+            enrichedReports.add({
+              'Id': report['Id'],
+              'Number': report['Number'],
+              'ReportDate':
+                  report['DateCreated'], // Note: using DateCreated as ReportDate
+              'FromDocumentId': fromDocId,
+              'ToDocumentId': toDocId,
+              'TotalTransactions': totals.first['TotalTransactions'] ?? 0,
+              'GrossSales':
+                  (totals.first['GrossSales'] as num?)?.toDouble() ?? 0.0,
+              'Discounts':
+                  (totals.first['Discounts'] as num?)?.toDouble() ?? 0.0,
+              'TotalTax':
+                  (taxTotals.first['TotalTax'] as num?)?.toDouble() ?? 0.0,
+              'NetSales': (totals.first['NetSales'] as num?)?.toDouble() ?? 0.0,
+            });
+          }
+
+          return enrichedReports;
+        }
+      } catch (e) {
+        debugPrint('ZReport table query failed: $e');
+      }
+
+      // Fallback: Generate Z-Reports from sales data
+      debugPrint('Generating Z-Reports from sales data...');
+      return await _generateZReportsFromSales();
+    } catch (e) {
+      debugPrint('Error getting Z-Reports: $e');
+      return [];
+    }
+  }
+
+  /// Generate Z-Reports from sales data (fixed to calculate tax correctly)
+  Future<List<Map<String, dynamic>>> _generateZReportsFromSales() async {
+    try {
+      final salesQuery = '''
+        SELECT 
+          DATE(DateCreated) as ReportDate,
+          COUNT(*) as TotalTransactions,
+          SUM(Total) as GrossSales,
+          SUM(Discount) as Discounts,
+          SUM(Total - Discount) as NetSales
+        FROM Document
+        WHERE DocumentTypeId = 2
+        GROUP BY DATE(DateCreated)
+        ORDER BY DATE(DateCreated) DESC
+      ''';
+
+      final dailyTotals = await _aroniumDatabase.rawQuery(salesQuery);
+
+      // For each day, calculate tax from DocumentItemTax table
+      List<Map<String, dynamic>> reports = [];
+      for (var day in dailyTotals) {
+        final date = day['ReportDate'];
+
+        // Get tax totals for this day
+        final taxQuery = '''
+          SELECT SUM(dit.Amount) as TotalTax
+          FROM DocumentItemTax dit
+          INNER JOIN DocumentItem di ON di.Id = dit.DocumentItemId
+          INNER JOIN Document d ON d.Id = di.DocumentId
+          WHERE d.DocumentTypeId = 2
+          AND DATE(d.DateCreated) = ?
+        ''';
+
+        final taxTotals = await _aroniumDatabase.rawQuery(taxQuery, [date]);
+
+        reports.add({
+          'ReportDate': date,
+          'TotalTransactions': day['TotalTransactions'],
+          'GrossSales': (day['GrossSales'] as num?)?.toDouble() ?? 0.0,
+          'Discounts': (day['Discounts'] as num?)?.toDouble() ?? 0.0,
+          'TotalTax': (taxTotals.first['TotalTax'] as num?)?.toDouble() ?? 0.0,
+          'NetSales': (day['NetSales'] as num?)?.toDouble() ?? 0.0,
+        });
+      }
+
+      return reports;
+    } catch (e) {
+      debugPrint('Error generating Z-Reports from sales: $e');
+      return [];
     }
   }
 }

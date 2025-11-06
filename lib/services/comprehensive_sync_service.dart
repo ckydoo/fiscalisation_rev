@@ -89,46 +89,45 @@ class ComprehensiveSyncService {
   }
 
   /// Get or create company in Laravel
+
   Future<int> getOrCreateCompany(Map<String, dynamic> companyDetails) async {
     try {
-      // First, try to get existing company by tax_id
-      final taxId = companyDetails['TaxId'] ?? companyDetails['TIN'];
+      // Extract tax_id from different possible field names
+      final taxId =
+          companyDetails['TaxId'] ??
+          companyDetails['TaxNumber'] ??
+          companyDetails['tax_id'];
 
-      if (taxId != null) {
-        try {
-          final response = await _get(
-            '/api/companies',
-            queryParams: {'tax_id': taxId.toString()},
-          );
-
-          if (response['data'] != null &&
-              (response['data'] as List).isNotEmpty) {
-            final company = response['data'][0];
-            debugPrint(
-              'Found existing company: ${company['id']} - ${company['name']}',
-            );
-            return company['id'];
-          }
-        } catch (e) {
-          debugPrint('Error searching for company: $e');
-        }
+      if (taxId == null || taxId.toString().isEmpty) {
+        throw Exception('Company tax_id is required');
       }
 
-      // Company doesn't exist, create it
+      // Prepare company data
       final companyData = {
         'name': companyDetails['Name'] ?? 'Unknown Company',
-        'tax_id': taxId ?? 'UNKNOWN',
-        'vat_number': companyDetails['VatNumber'],
+        'tax_id': taxId.toString(),
+        'vat_number':
+            companyDetails['VatNumber'] ?? companyDetails['TaxNumber'],
         'address': companyDetails['Address'],
-        'phone': companyDetails['Phone'],
+        'phone': companyDetails['PhoneNumber'] ?? companyDetails['Phone'],
         'email': companyDetails['Email'],
       };
 
-      final response = await _post('/api/companies', companyData);
-      final newCompanyId = response['data']['id'];
+      debugPrint('Getting or creating company with tax_id: $taxId');
 
-      debugPrint('Created new company: $newCompanyId - ${companyData['name']}');
-      return newCompanyId;
+      // Use the atomic getOrCreate endpoint
+      final response = await _post('/api/companies/get-or-create', companyData);
+
+      final companyId = response['data']['id'];
+      final wasCreated = response['created'] ?? false;
+
+      debugPrint(
+        wasCreated
+            ? '✓ Created new company: $companyId - ${companyData['name']}'
+            : '✓ Found existing company: $companyId - ${companyData['name']}',
+      );
+
+      return companyId;
     } catch (e) {
       debugPrint('Error getting/creating company: $e');
       rethrow;
@@ -262,35 +261,46 @@ class ComprehensiveSyncService {
     bool forceSync = false,
   }) async {
     try {
-      // Get all stock data from Aronium
       final aroniumStocks = await _dbService.getAllStockLevels();
+
+      // ✅ ADD THIS DEBUG
+      debugPrint('=== STOCK SYNC DEBUG ===');
+      debugPrint('Aronium stocks retrieved: ${aroniumStocks.length}');
 
       if (aroniumStocks.isEmpty) {
         return {'count': 0, 'message': 'No stock data to sync'};
       }
 
-      // First, we need to map Aronium product IDs to Laravel product IDs
       final productsResponse = await _get(
         '/api/products',
         queryParams: {'company_id': companyId, 'per_page': 1000},
       );
 
-      final productMap = <int, int>{}; // Aronium ID -> Laravel ID
+      final productMap = <int, int>{};
       for (var product in productsResponse['data']) {
         productMap[product['aronium_product_id']] = product['id'];
       }
 
-      // Transform stock data for Laravel API
+      debugPrint('Product mapping created: ${productMap.length} products');
+
       final stocksToSync =
           aroniumStocks
-              .where((stock) {
-                return productMap.containsKey(stock['ProductId']);
-              })
+              .where((stock) => productMap.containsKey(stock['ProductId']))
               .map((stock) {
+                final quantity = (stock['Quantity'] as num?)?.toDouble() ?? 0.0;
+
+                // ✅ ADD THIS DEBUG
+                if (quantity > 0) {
+                  debugPrint(
+                    'Stock for Product ${stock['ProductId']}: $quantity',
+                  );
+                }
+
                 return {
                   'product_id': productMap[stock['ProductId']],
                   'company_id': companyId,
-                  'quantity': (stock['Quantity'] as num?)?.toDouble() ?? 0.0,
+                  'quantity': quantity,
+                  'available_quantity': quantity, // ← Should equal quantity
                   'reserved_quantity':
                       (stock['ReservedQuantity'] as num?)?.toDouble() ?? 0.0,
                   'reorder_level': (stock['ReorderLevel'] as num?)?.toDouble(),
@@ -301,6 +311,11 @@ class ComprehensiveSyncService {
               })
               .toList();
 
+      debugPrint('Stocks to sync: ${stocksToSync.length}');
+      debugPrint(
+        'First stock to sync: ${stocksToSync.isNotEmpty ? stocksToSync.first : "none"}',
+      );
+      debugPrint('=== END STOCK SYNC DEBUG ===');
       if (stocksToSync.isEmpty) {
         return {'count': 0, 'message': 'No matching products for stock sync'};
       }
@@ -517,7 +532,18 @@ class ComprehensiveSyncService {
 
   /// Helper method to sync a single sale (from existing implementation)
   Future<void> _syncSingleSale(Map<String, dynamic> sale, int companyId) async {
-    // Transform sale for Laravel API (using your existing logic)
+    // Convert tax_details to JSON string if it's an object/array
+    String? taxDetailsString;
+    if (sale['TaxDetails'] != null) {
+      if (sale['TaxDetails'] is String) {
+        taxDetailsString = sale['TaxDetails'];
+      } else {
+        // Convert object/array to JSON string
+        taxDetailsString = jsonEncode(sale['TaxDetails']);
+      }
+    }
+
+    // Transform sale for Laravel API
     final saleData = {
       'document_id': sale['Id'],
       'document_number': sale['DocumentNumber'] ?? 'INV-${sale['Id']}',
@@ -528,17 +554,18 @@ class ComprehensiveSyncService {
       'discount': (sale['Discount'] as num?)?.toDouble() ?? 0.0,
       'customer_id': sale['CustomerId'],
       'user_id': sale['UserId'],
-      'status': 'fiscalized',
+      'status': sale['FiscalStatus'] ?? 'fiscalized',
       'fiscal_signature': sale['FiscalSignature'],
       'qr_code': sale['QrCode'],
       'fiscal_invoice_number': sale['FiscalInvoiceNumber'],
-      'fiscalized_at': DateTime.now().toIso8601String(),
-      'tax_details': sale['TaxDetails'],
+      'fiscalized_at': sale['FiscalizedAt'] ?? DateTime.now().toIso8601String(),
+      'tax_details': taxDetailsString, // ✅ Now a JSON string
       'items':
           (sale['Items'] as List<dynamic>?)?.map((item) {
             return {
               'product_id': item['ProductId'],
-              'product_name': item['ProductDetails']?['Name'] ?? 'Unknown',
+              'product_name':
+                  item['ProductDetails']?['Name'] ?? item['Name'] ?? 'Unknown',
               'quantity': (item['Quantity'] as num?)?.toDouble() ?? 0.0,
               'price': (item['Price'] as num?)?.toDouble() ?? 0.0,
               'discount': (item['Discount'] as num?)?.toDouble() ?? 0.0,
@@ -551,6 +578,8 @@ class ComprehensiveSyncService {
           }).toList() ??
           [],
     };
+
+    debugPrint('Syncing sale: ${saleData['document_number']}');
 
     await _post('/api/sales', saleData);
   }
