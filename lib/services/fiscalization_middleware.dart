@@ -105,8 +105,7 @@ class FiscalizationMiddleware {
               );
 
               return {
-                'PaymentType':
-                    paymentTypeId, // ✅ CRITICAL: Changed from PaymentTypeId to PaymentType
+                'PaymentType': paymentTypeId,
                 'Amount': payment['Amount'],
                 'PaymentTypeName':
                     payment['PaymentTypeName'] ??

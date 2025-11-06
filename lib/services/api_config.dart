@@ -4,7 +4,6 @@ class ApiConfig {
   static const String baseUrl = 'http://192.168.1.219:8000';
 
   // API Token for authentication - Update with your actual token
-  // FIXED: Removed extra quote at the end
   static const String? apiToken =
       '2|SZ2lYC5x6n1Gc4v90VxQUOghBrMQwyo35tFI69bQ6ead7200';
 
@@ -27,7 +26,6 @@ class ApiConfig {
   static const bool syncFailedFiscalizations = true;
 
   /// Validate configuration
-  /// FIXED: Now checks if token exists, not if baseUrl is different
   static bool isConfigured() {
     return baseUrl.isNotEmpty && apiToken != null && apiToken!.isNotEmpty;
   }
