@@ -28,6 +28,7 @@ class LaravelApiClient {
   }
 
   /// Send sales data to Laravel API
+
   Future<Map<String, dynamic>> sendSalesData({
     required Map<String, dynamic> saleDocument,
     required List<Map<String, dynamic>> saleItems,
@@ -37,75 +38,90 @@ class LaravelApiClient {
     try {
       debugPrint('Sending sales data to Laravel API...');
 
-      // FIX 1: Properly map document_number from Aronium database
-      // Aronium uses 'Number' or 'Id', not 'DocumentNumber'
+      // Map document_number
       final documentNumber =
           saleDocument['DocumentNumber'] ??
           saleDocument['Number']?.toString() ??
           saleDocument['Id']?.toString() ??
           'DOC-${saleDocument['Id']}';
 
-      // FIX 2: Properly map tax_id from Aronium Company table
-      // Aronium uses 'TaxNumber' not 'TaxId'
+      // Map tax_id
       final taxId =
           companyDetails['TaxId'] ??
           companyDetails['TaxNumber'] ??
           companyDetails['Tax'] ??
           '';
 
-      debugPrint('Mapped document_number: $documentNumber');
-      debugPrint('Mapped tax_id: $taxId');
+      // Get or find company_id (from previous sync)
+      // You'll need to implement this method to get the company_id
+      int companyId = await _getCompanyId(taxId);
 
-      // Prepare the payload
+      // Convert tax_details to JSON string
+      String? taxDetailsString;
+      if (fiscalData != null && fiscalData['TaxDetails'] != null) {
+        if (fiscalData['TaxDetails'] is String) {
+          taxDetailsString = fiscalData['TaxDetails'];
+        } else {
+          taxDetailsString = jsonEncode(fiscalData['TaxDetails']);
+        }
+      } else if (fiscalData != null && fiscalData['tax_details'] != null) {
+        if (fiscalData['tax_details'] is String) {
+          taxDetailsString = fiscalData['tax_details'];
+        } else {
+          taxDetailsString = jsonEncode(fiscalData['tax_details']);
+        }
+      }
+
+      // ✅ NEW FORMAT - Flat structure (matches fixed SalesController)
       final payload = {
-        'sale': {
-          'document_id': saleDocument['Id'],
-          'document_number': documentNumber, // FIXED
-          'date_created': saleDocument['DateCreated'],
-          'total': saleDocument['Total'],
-          'tax': saleDocument['Tax'] ?? 0,
-          'discount': saleDocument['Discount'] ?? 0,
-          'customer_id': saleDocument['CustomerId'],
-          'user_id': saleDocument['UserId'],
-          'status': saleDocument['FiscalStatus'] ?? 'pending',
-        },
+        'document_id': saleDocument['Id'],
+        'document_number': documentNumber,
+        'company_id': companyId, // ✅ Use existing company_id
+        'date_created': saleDocument['DateCreated'],
+        'total': saleDocument['Total'],
+        'tax': saleDocument['Tax'] ?? 0,
+        'discount': saleDocument['Discount'] ?? 0.0,
+        'customer_id': saleDocument['CustomerId'],
+        'user_id': saleDocument['UserId'],
+        'status':
+            saleDocument['FiscalStatus'] ??
+                    fiscalData?['fiscal_signature'] != null
+                ? 'fiscalized'
+                : 'error',
+        'fiscal_signature':
+            fiscalData?['fiscal_signature'] ?? fiscalData?['FiscalSignature'],
+        'qr_code': fiscalData?['qr_code'] ?? fiscalData?['QrCode'],
+        'fiscal_invoice_number':
+            fiscalData?['fiscal_invoice_number'] ??
+            fiscalData?['FiscalInvoiceNumber'],
+        'fiscalized_at':
+            fiscalData != null && fiscalData['fiscal_signature'] != null
+                ? (fiscalData['fiscalized_date'] ??
+                    fiscalData['FiscalizedDate'] ??
+                    DateTime.now().toIso8601String())
+                : null,
+        'tax_details': taxDetailsString, // ✅ JSON string
         'items':
             saleItems.map((item) {
               return {
                 'product_id': item['ProductId'],
-                'product_name': item['ProductDetails']?['Name'] ?? 'Unknown',
-                'quantity': item['Quantity'],
-                'price': item['Price'],
-                'discount': item['Discount'] ?? 0,
-                'tax': item['Tax'] ?? 0,
-                'total': item['Total'],
-                'tax_id': item['TaxID'],
+                'product_name':
+                    item['ProductDetails']?['Name'] ??
+                    item['Name'] ??
+                    'Unknown',
+                'quantity': (item['Quantity'] as num?)?.toDouble() ?? 0.0,
+                'price': (item['Price'] as num?)?.toDouble() ?? 0.0,
+                'discount': (item['Discount'] as num?)?.toDouble() ?? 0.0,
+                'tax': (item['Tax'] as num?)?.toDouble() ?? 0.0,
+                'total': (item['Total'] as num?)?.toDouble() ?? 0.0,
+                'tax_id': item['TaxID'] ?? item['TaxId'],
                 'tax_code': item['TaxCode'],
-                'tax_percent': item['TaxPercent'] ?? 0,
+                'tax_percent': (item['TaxPercent'] as num?)?.toDouble() ?? 0.0,
               };
             }).toList(),
-        'company': {
-          'name': companyDetails['Name'] ?? 'Unknown Company',
-          'address': companyDetails['Address'],
-          'phone': companyDetails['Phone'],
-          'email': companyDetails['Email'],
-          'tax_id': taxId, // FIXED
-          'vat_number': companyDetails['VatNumber'] ?? companyDetails['VAT'],
-        },
-        'fiscal_data':
-            fiscalData != null
-                ? {
-                  'fiscal_signature': fiscalData['FiscalSignature'],
-                  'qr_code': fiscalData['QrCode'],
-                  'fiscal_invoice_number': fiscalData['FiscalInvoiceNumber'],
-                  'fiscalized_date': fiscalData['FiscalizedDate'],
-                  'tax_details': fiscalData['TaxDetails'],
-                }
-                : null,
-        'timestamp': DateTime.now().toIso8601String(),
       };
 
-      debugPrint('Payload: ${jsonEncode(payload)}');
+      debugPrint('Sending payload: ${jsonEncode(payload)}');
 
       // Make the API request
       final response = await http
@@ -144,6 +160,35 @@ class LaravelApiClient {
         'message': 'Exception occurred: ${e.toString()}',
         'error': e.toString(),
       };
+    }
+  }
+
+  /// Helper method to get company_id from Laravel
+  /// Add this method to your LaravelApiClient class
+  Future<int> _getCompanyId(String taxId) async {
+    try {
+      // First try to get existing company
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl/api/companies?tax_id=$taxId'),
+            headers: _headers,
+          )
+          .timeout(timeout);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['data'] != null &&
+            data['data'] is List &&
+            (data['data'] as List).isNotEmpty) {
+          return data['data'][0]['id'];
+        }
+      }
+
+      // If not found, this is an error - company should be synced first
+      throw Exception('Company not found. Please sync company first.');
+    } catch (e) {
+      debugPrint('Error getting company_id: $e');
+      rethrow;
     }
   }
 
