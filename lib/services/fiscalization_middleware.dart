@@ -61,17 +61,20 @@ class FiscalizationMiddleware {
         );
         debugPrint('Calculated subtotal: $subtotal');
 
-        // Modify tax calculation to ensure proper amounts
+        // FIX: Calculate tax with salesAmountWithTax
         final salesTaxes =
             taxes.map((tax) {
-              final taxRate = (tax['Rate'] as num?)?.toDouble() ?? 0;
+              final taxRate = (tax['Rate'] as num?)?.toDouble() ?? 0.0;
               final taxAmount = subtotal * (taxRate / 100);
+              // FIX: Add salesAmountWithTax calculation
+              final salesAmountWithTax = subtotal + taxAmount;
 
               debugPrint(
                 'Tax Calculation - '
                 'Rate: $taxRate%, '
                 'Taxable Amount: $subtotal, '
-                'Tax Amount: $taxAmount',
+                'Tax Amount: $taxAmount, '
+                'Sales Amount With Tax: $salesAmountWithTax',
               );
 
               return {
@@ -81,6 +84,8 @@ class FiscalizationMiddleware {
                 'TaxID': tax['Id'],
                 'Name': tax['Name'] ?? 'Unknown Tax',
                 'TaxAmount': taxAmount,
+                'SalesAmountWithTax':
+                    salesAmountWithTax, // FIX: Added this field
               };
             }).toList();
 
@@ -145,6 +150,9 @@ class FiscalizationMiddleware {
         debugPrint('Total with tax: $totalWithTax');
         debugPrint('Sales payments: $salesPayments');
         debugPrint('Enriched sales lines: $enrichedSalesLines');
+        debugPrint(
+          'Sales taxes (with SalesAmountWithTax): $salesTaxes',
+        ); // Added debug
 
         // STEP 1: Fiscalize with ZIMRA
         final result = await _fiscalizationService.fiscalizeTransaction(
@@ -292,26 +300,13 @@ class FiscalizationMiddleware {
                   'FiscalSignature': sale['FiscalSignature'],
                   'QrCode': sale['QrCode'],
                   'FiscalInvoiceNumber': sale['FiscalInvoiceNumber'],
-                  'FiscalizedDate': sale['FiscalizedDate'],
                   'TaxDetails': sale['TaxDetails'],
                 }
                 : null,
       );
-    } catch (e, stackTrace) {
-      debugPrint('Error syncing sale to API: $e\n$stackTrace');
-      return {
-        'success': false,
-        'message': 'Exception occurred: ${e.toString()}',
-      };
+    } catch (e) {
+      return {'success': false, 'message': 'Error: ${e.toString()}'};
     }
-  }
-
-  /// Test Laravel API connection
-  Future<bool> testApiConnection() async {
-    if (_laravelApiClient == null) {
-      return false;
-    }
-    return await _laravelApiClient.testConnection();
   }
 
   void stopPolling() {
@@ -323,5 +318,13 @@ class FiscalizationMiddleware {
     _pollingTimer?.cancel();
     statusMessage.dispose();
     apiStatusMessage.dispose();
+  }
+
+  /// Test Laravel API connection
+  Future<bool> testApiConnection() async {
+    if (_laravelApiClient == null) {
+      return false;
+    }
+    return await _laravelApiClient.testConnection();
   }
 }

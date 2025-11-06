@@ -37,15 +37,34 @@ class LaravelApiClient {
     try {
       debugPrint('Sending sales data to Laravel API...');
 
+      // FIX 1: Properly map document_number from Aronium database
+      // Aronium uses 'Number' or 'Id', not 'DocumentNumber'
+      final documentNumber =
+          saleDocument['DocumentNumber'] ??
+          saleDocument['Number']?.toString() ??
+          saleDocument['Id']?.toString() ??
+          'DOC-${saleDocument['Id']}';
+
+      // FIX 2: Properly map tax_id from Aronium Company table
+      // Aronium uses 'TaxNumber' not 'TaxId'
+      final taxId =
+          companyDetails['TaxId'] ??
+          companyDetails['TaxNumber'] ??
+          companyDetails['Tax'] ??
+          '';
+
+      debugPrint('Mapped document_number: $documentNumber');
+      debugPrint('Mapped tax_id: $taxId');
+
       // Prepare the payload
       final payload = {
         'sale': {
           'document_id': saleDocument['Id'],
-          'document_number': saleDocument['DocumentNumber'],
+          'document_number': documentNumber, // FIXED
           'date_created': saleDocument['DateCreated'],
           'total': saleDocument['Total'],
-          'tax': saleDocument['Tax'],
-          'discount': saleDocument['Discount'],
+          'tax': saleDocument['Tax'] ?? 0,
+          'discount': saleDocument['Discount'] ?? 0,
           'customer_id': saleDocument['CustomerId'],
           'user_id': saleDocument['UserId'],
           'status': saleDocument['FiscalStatus'] ?? 'pending',
@@ -57,21 +76,21 @@ class LaravelApiClient {
                 'product_name': item['ProductDetails']?['Name'] ?? 'Unknown',
                 'quantity': item['Quantity'],
                 'price': item['Price'],
-                'discount': item['Discount'],
-                'tax': item['Tax'],
+                'discount': item['Discount'] ?? 0,
+                'tax': item['Tax'] ?? 0,
                 'total': item['Total'],
                 'tax_id': item['TaxID'],
                 'tax_code': item['TaxCode'],
-                'tax_percent': item['TaxPercent'],
+                'tax_percent': item['TaxPercent'] ?? 0,
               };
             }).toList(),
         'company': {
-          'name': companyDetails['Name'],
+          'name': companyDetails['Name'] ?? 'Unknown Company',
           'address': companyDetails['Address'],
           'phone': companyDetails['Phone'],
           'email': companyDetails['Email'],
-          'tax_id': companyDetails['TaxId'],
-          'vat_number': companyDetails['VatNumber'],
+          'tax_id': taxId, // FIXED
+          'vat_number': companyDetails['VatNumber'] ?? companyDetails['VAT'],
         },
         'fiscal_data':
             fiscalData != null
@@ -163,7 +182,6 @@ class LaravelApiClient {
           'success': false,
           'message': errorData['message'] ?? 'Failed to send batch sales data',
           'error': errorData,
-          'status_code': response.statusCode,
         };
       }
     } catch (e, stackTrace) {
@@ -186,7 +204,6 @@ class LaravelApiClient {
       debugPrint('Updating fiscal data for document $documentId...');
 
       final payload = {
-        'document_id': documentId,
         'fiscal_data': fiscalData,
         'timestamp': DateTime.now().toIso8601String(),
       };
@@ -198,6 +215,8 @@ class LaravelApiClient {
             body: jsonEncode(payload),
           )
           .timeout(timeout);
+
+      debugPrint('Update Response Status: ${response.statusCode}');
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
         final responseData = jsonDecode(response.body);
@@ -212,7 +231,6 @@ class LaravelApiClient {
           'success': false,
           'message': errorData['message'] ?? 'Failed to update fiscal data',
           'error': errorData,
-          'status_code': response.statusCode,
         };
       }
     } catch (e, stackTrace) {
@@ -223,6 +241,31 @@ class LaravelApiClient {
         'message': 'Exception occurred: ${e.toString()}',
         'error': e.toString(),
       };
+    }
+  }
+
+  /// Health check
+  Future<Map<String, dynamic>> healthCheck() async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/api/health'), headers: _headers)
+          .timeout(timeout);
+
+      if (response.statusCode == 200) {
+        final responseData = jsonDecode(response.body);
+        return {
+          'success': true,
+          'message': 'API is reachable',
+          'data': responseData,
+        };
+      } else {
+        return {
+          'success': false,
+          'message': 'API returned status ${response.statusCode}',
+        };
+      }
+    } catch (e) {
+      return {'success': false, 'message': 'Cannot reach API: ${e.toString()}'};
     }
   }
 
@@ -237,52 +280,6 @@ class LaravelApiClient {
     } catch (e) {
       debugPrint('API connection test failed: $e');
       return false;
-    }
-  }
-
-  /// Sync all unsynchronized sales
-  Future<Map<String, dynamic>> syncUnsyncedSales({
-    required List<Map<String, dynamic>> unsyncedSales,
-  }) async {
-    try {
-      debugPrint('Syncing ${unsyncedSales.length} unsynced sales...');
-
-      final results = <Map<String, dynamic>>[];
-      int successCount = 0;
-      int failureCount = 0;
-
-      for (var sale in unsyncedSales) {
-        final result = await sendSalesData(
-          saleDocument: sale['document'],
-          saleItems: sale['items'],
-          companyDetails: sale['company'],
-          fiscalData: sale['fiscal_data'],
-        );
-
-        results.add({'document_id': sale['document']['Id'], 'result': result});
-
-        if (result['success'] == true) {
-          successCount++;
-        } else {
-          failureCount++;
-        }
-      }
-
-      return {
-        'success': failureCount == 0,
-        'message': 'Synced $successCount of ${unsyncedSales.length} sales',
-        'success_count': successCount,
-        'failure_count': failureCount,
-        'results': results,
-      };
-    } catch (e, stackTrace) {
-      debugPrint('Error syncing sales: $e');
-      debugPrint('Stack trace: $stackTrace');
-      return {
-        'success': false,
-        'message': 'Exception occurred during sync: ${e.toString()}',
-        'error': e.toString(),
-      };
     }
   }
 }

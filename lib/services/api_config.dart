@@ -1,7 +1,7 @@
 /// Configuration for Laravel API integration
 class ApiConfig {
   // API Base URL - Update this with your Laravel backend URL
-  static const String baseUrl = 'http://192.168.1.219:8000';
+  static const String baseUrl = 'http://192.168.9.174:8000';
 
   // API Token for authentication - Update with your actual token
   static const String? apiToken =

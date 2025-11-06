@@ -4,10 +4,15 @@ import 'package:intl/intl.dart';
 
 class ZimraFiscalizationService {
   final ZimraApiClient _zimraApiClient;
-  String?
-  _lastFiscalizedReceiptHash; // Stores the hash of the last successfully fiscalized receipt
+  String? _lastFiscalizedReceiptHash;
 
   ZimraFiscalizationService(this._zimraApiClient);
+
+  /// Helper function to round to 2 decimal places
+  /// This ensures ZIMRA's decimal(21,2) format requirement is satisfied
+  double _roundTo2Decimals(double value) {
+    return double.parse(value.toStringAsFixed(2));
+  }
 
   Future<Map<String, dynamic>> fiscalizeTransaction(
     Map<String, dynamic> salesDocument,
@@ -16,7 +21,7 @@ class ZimraFiscalizationService {
     List<Map<String, dynamic>> salesTaxes,
     int deviceId,
     Map<String, dynamic> companyDetails,
-    String currencyCode, // NEW: Add currency code parameter
+    String currencyCode,
   ) async {
     try {
       // Validate input parameters
@@ -47,7 +52,7 @@ class ZimraFiscalizationService {
       final documentId = salesDocument['Id'] as int;
       final total = (salesDocument['Total'] as num?)?.toDouble() ?? 0.0;
 
-      // Prepare receipt lines with validation
+      // Prepare receipt lines with validation and proper decimal formatting
       final List<Map<String, dynamic>> receiptLines = [];
       for (var line in salesLines) {
         if (line['ProductDetails']?['Name'] == null) {
@@ -73,11 +78,17 @@ class ZimraFiscalizationService {
           'receiptLineNo': line['Id'] ?? 1,
           'receiptLineHSCode': line['HSCode'] ?? '',
           'receiptLineName': line['ProductDetails']?['Name'] ?? 'Unknown Item',
-          'receiptLinePrice': (line['Price'] as num?)?.toDouble() ?? 0.0,
-          'receiptLineQuantity': (line['Quantity'] as num?)?.toDouble() ?? 0.0,
-          'receiptLineTotal': lineTotal,
+          'receiptLinePrice': _roundTo2Decimals(
+            (line['Price'] as num?)?.toDouble() ?? 0.0,
+          ),
+          'receiptLineQuantity': _roundTo2Decimals(
+            (line['Quantity'] as num?)?.toDouble() ?? 0.0,
+          ),
+          'receiptLineTotal': _roundTo2Decimals(lineTotal),
           'taxCode': line['TaxCode'],
-          'taxPercent': line['TaxPercent'],
+          'taxPercent': _roundTo2Decimals(
+            (line['TaxPercent'] as num?)?.toDouble() ?? 0.0,
+          ),
           'taxID': line['TaxID'],
         });
       }
@@ -91,7 +102,7 @@ class ZimraFiscalizationService {
         };
       }
 
-      // Prepare receipt taxes with validation
+      // FIX: Prepare receipt taxes with proper decimal formatting
       final List<Map<String, dynamic>> receiptTaxes = [];
       for (var tax in salesTaxes) {
         if (tax['TaxID'] == null) {
@@ -102,12 +113,30 @@ class ZimraFiscalizationService {
           };
         }
 
+        // FIX: Round all decimal values to 2 decimal places
+        final taxAmount = _roundTo2Decimals(
+          (tax['TaxAmount'] as num?)?.toDouble() ?? 0.0,
+        );
+        final salesAmountWithTax = _roundTo2Decimals(
+          (tax['SalesAmountWithTax'] as num?)?.toDouble() ?? 0.0,
+        );
+        final taxPercent = _roundTo2Decimals(
+          (tax['TaxPercent'] as num?)?.toDouble() ?? 0.0,
+        );
+
+        debugPrint(
+          'Formatting tax for ZIMRA - '
+          'TaxAmount: $taxAmount (2 decimals), '
+          'SalesAmountWithTax: $salesAmountWithTax (2 decimals), '
+          'TaxPercent: $taxPercent (2 decimals)',
+        );
+
         receiptTaxes.add({
           'taxCode': tax['TaxCode'],
-          'taxPercent': tax['TaxPercent'],
+          'taxPercent': taxPercent,
           'taxID': tax['TaxID'],
-          'taxAmount': tax['TaxAmount'],
-          'salesAmountWithTax': tax['SalesAmountWithTax'],
+          'taxAmount': taxAmount, // FIX: Properly rounded
+          'salesAmountWithTax': salesAmountWithTax, // FIX: Properly rounded
         });
       }
 
@@ -120,7 +149,7 @@ class ZimraFiscalizationService {
         };
       }
 
-      // Prepare receipt payments with validation
+      // Prepare receipt payments with validation and proper decimal formatting
       final List<Map<String, dynamic>> receiptPayments = [];
       for (var payment in salesPayments) {
         if (payment['PaymentType'] == null) {
@@ -133,7 +162,9 @@ class ZimraFiscalizationService {
 
         receiptPayments.add({
           'moneyTypeCode': _mapPaymentType(payment['PaymentType']),
-          'paymentAmount': payment['Amount'],
+          'paymentAmount': _roundTo2Decimals(
+            (payment['Amount'] as num?)?.toDouble() ?? 0.0,
+          ),
         });
       }
 
@@ -153,7 +184,7 @@ class ZimraFiscalizationService {
         receiptCurrency: currencyCode,
         receiptGlobalNo: documentId,
         receiptDate: DateTime.parse(salesDocument['DateCreated']),
-        receiptTotal: total,
+        receiptTotal: _roundTo2Decimals(total),
         receiptTaxes: receiptTaxes,
         previousReceiptHash: _lastFiscalizedReceiptHash,
       );
@@ -184,7 +215,7 @@ class ZimraFiscalizationService {
         'receiptLines': receiptLines,
         'receiptTaxes': receiptTaxes,
         'receiptPayments': receiptPayments,
-        'receiptTotal': total,
+        'receiptTotal': _roundTo2Decimals(total),
         'receiptPrintForm': 'Receipt48',
         'receiptDeviceSignature': deviceSignature,
         'buyerData': {
@@ -235,8 +266,6 @@ class ZimraFiscalizationService {
             'message': errorMessage,
             'errorType': response?['errorType'],
             'validationErrors': response?['validationErrors'],
-            'detailedError': response?['detailedError'],
-            'troubleshooting': response?['troubleshooting'],
           };
         }
 
@@ -246,53 +275,44 @@ class ZimraFiscalizationService {
           'response': response,
         };
       }
-    } catch (e, st) {
-      debugPrint(
-        'Error during fiscalization for Document ID: ${salesDocument['Id']}: $e\n$st',
-      );
+    } catch (e, stackTrace) {
+      debugPrint('Exception during fiscalization: $e');
+      debugPrint('Stack trace: $stackTrace');
       return {
         'success': false,
-        'message': 'Exception during fiscalization: $e',
-        'errorType': 'system_error',
-        'stackTrace': st.toString(),
+        'message': 'Exception during fiscalization: ${e.toString()}',
+        'errorType': 'exception',
       };
     }
   }
 
-  /// Helper method to ensure a value is converted to an integer
-  int _ensureIntegerValue(dynamic value) {
-    if (value == null) {
-      return 0;
+  /// Maps internal payment type IDs to ZIMRA money type codes
+  String _mapPaymentType(dynamic paymentTypeId) {
+    // Add your payment type mapping logic here
+    // Example mapping:
+    switch (paymentTypeId) {
+      case 1:
+        return 'Cash';
+      case 2:
+        return 'Card';
+      case 3:
+        return 'MobileWallet';
+      case 4:
+        return 'BankTransfer';
+      default:
+        return 'Cash';
     }
-    if (value is int) {
-      return value;
-    }
-    if (value is String) {
-      return int.tryParse(value) ?? 0;
-    }
-    if (value is double) {
-      return value.toInt();
-    }
-    // For any other type, try to convert to string first, then to int
-    return int.tryParse(value.toString()) ?? 0;
   }
 
-  String _mapPaymentType(int aroniumPaymentType) {
-    switch (aroniumPaymentType) {
-      case 0:
-        return 'Cash';
-      case 1:
-        return 'Card';
-      case 2:
-        return 'MobileWallet';
-      case 3:
-        return 'BankTransfer';
-      case 4:
-        return 'Credit';
-      case 5:
-        return 'Coupon';
-      default:
-        return 'Other';
+  /// Ensures a value is an integer
+  int _ensureIntegerValue(dynamic value) {
+    if (value is int) {
+      return value;
+    } else if (value is double) {
+      return value.toInt();
+    } else if (value is String) {
+      return int.tryParse(value) ?? 0;
     }
+    return 0;
   }
 }
