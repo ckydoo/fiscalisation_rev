@@ -118,6 +118,33 @@ class DatabaseService {
           enrichedItems.add({...item, 'ProductDetails': product.first});
         }
       }
+      final payments = await _aroniumDatabase.query(
+        'Payment',
+        where: 'DocumentId = ?',
+        whereArgs: [documentId],
+      ); // Enrich payments with payment type details
+      final enrichedPayments = <Map<String, dynamic>>[];
+      for (var payment in payments) {
+        final paymentTypeId = payment['PaymentTypeId'];
+
+        // Get payment type details
+        final paymentType = await _aroniumDatabase.query(
+          'PaymentType',
+          where: 'Id = ?',
+          whereArgs: [paymentTypeId],
+          limit: 1,
+        );
+
+        enrichedPayments.add({
+          'PaymentTypeId': paymentTypeId,
+          'Amount': (payment['Amount'] as num?)?.toDouble() ?? 0.0,
+          'Date': payment['Date'],
+          'PaymentTypeName':
+              paymentType.isNotEmpty ? paymentType.first['Name'] : 'Unknown',
+          'PaymentTypeCode':
+              paymentType.isNotEmpty ? paymentType.first['Code'] : null,
+        });
+      }
 
       Map<String, dynamic> mergedDocument = {...document};
       if (fiscalizedMap.containsKey(documentId)) {
@@ -317,6 +344,7 @@ class DatabaseService {
 
         detailedItems.add({
           'ProductId': productId,
+          'ProductDetails': product,
           'Name': product['Name'] ?? 'Unknown Product',
           'Quantity': (item['Quantity'] as num?)?.toDouble() ?? 0.0,
           'Price': (item['Price'] as num?)?.toDouble() ?? 0.0,
@@ -326,6 +354,33 @@ class DatabaseService {
           'TaxCode': taxCode,
         });
       }
+    }
+    final payments = await _aroniumDatabase.query(
+      'Payment',
+      where: 'DocumentId = ?',
+      whereArgs: [saleId],
+    );
+    final enrichedPayments = <Map<String, dynamic>>[];
+    for (var payment in payments) {
+      final paymentTypeId = payment['PaymentTypeId'];
+
+      // Get payment type details
+      final paymentType = await _aroniumDatabase.query(
+        'PaymentType',
+        where: 'Id = ?',
+        whereArgs: [paymentTypeId],
+        limit: 1,
+      );
+
+      enrichedPayments.add({
+        'PaymentTypeId': paymentTypeId,
+        'Amount': (payment['Amount'] as num?)?.toDouble() ?? 0.0,
+        'Date': payment['Date'],
+        'PaymentTypeName':
+            paymentType.isNotEmpty ? paymentType.first['Name'] : 'Unknown',
+        'PaymentTypeCode':
+            paymentType.isNotEmpty ? paymentType.first['Code'] : null,
+      });
     }
 
     return {
@@ -338,6 +393,7 @@ class DatabaseService {
       'CustomerId': sale['CustomerId'],
       'UserId': sale['UserId'],
       'Items': detailedItems,
+      'Payments': enrichedPayments,
     };
   }
 
